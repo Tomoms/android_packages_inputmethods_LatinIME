@@ -62,6 +62,7 @@ android_app {
     product_specific: true,
 
     optimize: {
+        proguard_compatibility: true,
         proguard_flags_files: ["proguard.flags"],
     },
 }
