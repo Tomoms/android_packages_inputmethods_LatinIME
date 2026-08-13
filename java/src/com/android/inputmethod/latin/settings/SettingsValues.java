@@ -70,6 +70,7 @@ public class SettingsValues {
     public final boolean mShowNumberRow;
     public final boolean mShowNumberRowPassword;
     public final boolean mShowLongpressHints;
+    public final boolean mShowsPasteButton;
     public final boolean mIncludesOtherImesInLanguageSwitchList;
     public final boolean mShowsLanguageSwitchKey;
     public final boolean mShowsEmojiKey;
@@ -150,6 +151,8 @@ public class SettingsValues {
         mShowNumberRow = prefs.getBoolean(Settings.PREF_SHOW_NUMBER_ROW, false);
         mShowNumberRowPassword = prefs.getBoolean(Settings.PREF_SHOW_NUMBER_ROW_PASSWORD, false);
         mShowLongpressHints = prefs.getBoolean(Settings.PREF_SHOW_LONGPRESS_HINTS, true);
+        mShowsPasteButton = prefs.getBoolean(Settings.PREF_SHOW_PASTE_BUTTON,
+                res.getBoolean(R.bool.config_default_show_paste_button));
         mIncludesOtherImesInLanguageSwitchList = Settings.ENABLE_SHOW_LANGUAGE_SWITCH_KEY_SETTINGS
                 ? prefs.getBoolean(Settings.PREF_INCLUDE_OTHER_IMES_IN_LANGUAGE_SWITCH_LIST, false)
                 : true /* forcibly */;
@@ -405,6 +408,8 @@ public class SettingsValues {
         sb.append("" + mKeyPreviewPopupOn);
         sb.append("\n   mShowsVoiceInputKey = ");
         sb.append("" + mShowsVoiceInputKey);
+        sb.append("\n   mShowsPasteButton = ");
+        sb.append("" + mShowsPasteButton);
         sb.append("\n   mIncludesOtherImesInLanguageSwitchList = ");
         sb.append("" + mIncludesOtherImesInLanguageSwitchList);
         sb.append("\n   mShowsLanguageSwitchKey = ");

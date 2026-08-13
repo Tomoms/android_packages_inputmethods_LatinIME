@@ -22,7 +22,6 @@ import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
-import androidx.core.view.ViewCompat;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.TypedValue;
@@ -35,7 +34,9 @@ import android.view.View.OnLongClickListener;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.accessibility.AccessibilityEvent;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 
@@ -57,14 +58,17 @@ import com.android.inputmethod.latin.utils.SplitKeyboardUtils;
 
 import java.util.ArrayList;
 
-public final class SuggestionStripView extends RelativeLayout implements OnClickListener,
-        OnLongClickListener {
+public final class SuggestionStripView extends RelativeLayout implements
+        OnClickListener, OnLongClickListener {
     public interface Listener {
         public void showImportantNoticeContents();
         public void pickSuggestionManually(SuggestedWordInfo word);
         public void onCodeInput(int primaryCode, int x, int y, boolean isKeyRepeat);
         public void toggleSplitKeyboard();
         public void toggleFloatingKeyboard();
+        public boolean onPaste();
+        public boolean isTextFieldEmpty();
+        public void onPasteActionAvailabilityChanged();
     }
 
     static final boolean DBG = DebugFlags.DEBUG_ENABLED;
@@ -91,45 +95,8 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
     Listener mListener;
     private SuggestedWords mSuggestedWords = SuggestedWords.getEmptyInstance();
     private int mStartIndexOfMoreSuggestions;
-
     private final SuggestionStripLayoutHelper mLayoutHelper;
-    private final StripVisibilityGroup mStripVisibilityGroup;
-
-    private static class StripVisibilityGroup {
-        private final View mSuggestionStripView;
-        private final View mSuggestionsStrip;
-        private final View mImportantNoticeStrip;
-
-        public StripVisibilityGroup(final View suggestionStripView,
-                final ViewGroup suggestionsStrip, final View importantNoticeStrip) {
-            mSuggestionStripView = suggestionStripView;
-            mSuggestionsStrip = suggestionsStrip;
-            mImportantNoticeStrip = importantNoticeStrip;
-            showSuggestionsStrip();
-        }
-
-        public void setLayoutDirection(final boolean isRtlLanguage) {
-            final int layoutDirection = isRtlLanguage ? ViewCompat.LAYOUT_DIRECTION_RTL
-                    : ViewCompat.LAYOUT_DIRECTION_LTR;
-            ViewCompat.setLayoutDirection(mSuggestionStripView, layoutDirection);
-            ViewCompat.setLayoutDirection(mSuggestionsStrip, layoutDirection);
-            ViewCompat.setLayoutDirection(mImportantNoticeStrip, layoutDirection);
-        }
-
-        public void showSuggestionsStrip() {
-            mSuggestionsStrip.setVisibility(VISIBLE);
-            mImportantNoticeStrip.setVisibility(INVISIBLE);
-        }
-
-        public void showImportantNoticeStrip() {
-            mSuggestionsStrip.setVisibility(INVISIBLE);
-            mImportantNoticeStrip.setVisibility(VISIBLE);
-        }
-
-        public boolean isShowingImportantNoticeStrip() {
-            return mImportantNoticeStrip.getVisibility() == VISIBLE;
-        }
-    }
+    private final SuggestionStripPasteController mPasteController;
 
     /**
      * Construct a {@link SuggestionStripView} for showing suggestions to be picked by the user.
@@ -154,8 +121,6 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
         mDockedStripMargin =
                 ((MarginLayoutParams) mSuggestionsStrip.getLayoutParams()).getMarginStart();
         mImportantNoticeStrip = findViewById(R.id.important_notice_strip);
-        mStripVisibilityGroup = new StripVisibilityGroup(this, mSuggestionsStrip,
-                mImportantNoticeStrip);
 
         for (int pos = 0; pos < SuggestedWords.MAX_SUGGESTIONS; pos++) {
             final TextView word = new TextView(context, null, R.attr.suggestionWordStyle);
@@ -178,6 +143,19 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
         mMoreSuggestionsView = (MoreSuggestionsView)mMoreSuggestionsContainer
                 .findViewById(R.id.more_suggestions_view);
         mMoreSuggestionsBuilder = new MoreSuggestions.Builder(context, mMoreSuggestionsView);
+        mPasteController = new SuggestionStripPasteController(context, this, mSuggestionsStrip,
+                mImportantNoticeStrip,
+                (HorizontalScrollView)findViewById(R.id.paste_actions),
+                (ImageButton)findViewById(R.id.suggestions_strip_paste_key),
+                findViewById(R.id.paste_button),
+                (ImageView)findViewById(R.id.paste_button_icon),
+                (TextView)findViewById(R.id.paste_button_text), this,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        dismissMoreSuggestionsPanel();
+                    }
+                });
 
         final Resources res = context.getResources();
         mMoreSuggestionsModalTolerance = res.getDimensionPixelOffset(
@@ -203,6 +181,22 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
      */
     public void setListener(final Listener listener, final View inputView) {
         mListener = listener;
+        mPasteController.setListener(new SuggestionStripPasteController.Listener() {
+            @Override
+            public boolean onPaste() {
+                return listener.onPaste();
+            }
+
+            @Override
+            public boolean isTextFieldEmpty() {
+                return listener.isTextFieldEmpty();
+            }
+
+            @Override
+            public void onPasteActionAvailabilityChanged() {
+                listener.onPasteActionAvailabilityChanged();
+            }
+        });
         mMainKeyboardView = (MainKeyboardView)inputView.findViewById(R.id.keyboard_view);
     }
 
@@ -262,11 +256,40 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
 
     public void setSuggestions(final SuggestedWords suggestedWords, final boolean isRtlLanguage) {
         clear();
-        mStripVisibilityGroup.setLayoutDirection(isRtlLanguage);
+        mPasteController.setLayoutDirection(isRtlLanguage);
         mSuggestedWords = suggestedWords;
         mStartIndexOfMoreSuggestions = mLayoutHelper.layoutAndReturnStartIndexOfMoreSuggestions(
                 getContext(), mSuggestedWords, mSuggestionsStrip, this);
-        mStripVisibilityGroup.showSuggestionsStrip();
+        mPasteController.onSuggestionsShown();
+    }
+
+    public static boolean canSuggestionsTakePriority(
+            final boolean suggestionCandidatesEnabled,
+            final boolean gestureFloatingPreviewTextEnabled,
+            final boolean shouldShowLxxSuggestionUi, final SuggestedWords suggestedWords) {
+        if (!suggestionCandidatesEnabled) {
+            return false;
+        }
+        // Count the same typed-word omission used by the strip layout. Punctuation and recorrection
+        // have input styles that keep every entry visible.
+        final boolean omitTypedWord = SuggestionStripLayoutHelper.shouldOmitTypedWord(
+                suggestedWords.mInputStyle, gestureFloatingPreviewTextEnabled,
+                shouldShowLxxSuggestionUi);
+        final int renderedSuggestionCount = suggestedWords.size() - (omitTypedWord ? 1 : 0);
+        return renderedSuggestionCount > 0;
+    }
+
+    public boolean updatePasteActionState(final boolean eligible,
+            final boolean suggestionsTakePriority) {
+        return mPasteController.updateState(eligible, suggestionsTakePriority);
+    }
+
+    public void closeTemporaryPasteMode() {
+        mPasteController.closeTemporaryMode();
+    }
+
+    public void resetPasteActionState() {
+        mPasteController.reset();
     }
 
     public void setMoreSuggestionsHeight(final int remainingHeight) {
@@ -293,7 +316,7 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
             dismissMoreSuggestionsPanel();
         }
         mLayoutHelper.layoutImportantNotice(mImportantNoticeStrip, importantNoticeTitle);
-        mStripVisibilityGroup.showImportantNoticeStrip();
+        mPasteController.showImportantNoticeStrip();
         mImportantNoticeStrip.setOnClickListener(this);
         return true;
     }
@@ -301,7 +324,7 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
     public void clear() {
         mSuggestionsStrip.removeAllViews();
         removeAllDebugInfoViews();
-        mStripVisibilityGroup.showSuggestionsStrip();
+        mPasteController.showSuggestionsStrip();
         dismissMoreSuggestionsPanel();
     }
 
@@ -420,7 +443,7 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
 
     @Override
     public boolean onInterceptTouchEvent(final MotionEvent me) {
-        if (mStripVisibilityGroup.isShowingImportantNoticeStrip()) {
+        if (!mPasteController.isShowingSuggestionsStrip()) {
             return false;
         }
         // Detecting sliding up finger to show {@link MoreSuggestionsView}.
@@ -532,6 +555,9 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
                     false /* isKeyRepeat */);
             return;
         }
+        if (mPasteController.onClick(view)) {
+            return;
+        }
 
         final Object tag = view.getTag();
         // {@link Integer} tag is set at
@@ -548,9 +574,16 @@ public final class SuggestionStripView extends RelativeLayout implements OnClick
     }
 
     @Override
+    protected void onWindowVisibilityChanged(final int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        mPasteController.onWindowVisibilityChanged(visibility);
+    }
+
+    @Override
     protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
+        resetPasteActionState();
         dismissMoreSuggestionsPanel();
+        super.onDetachedFromWindow();
     }
 
     @Override

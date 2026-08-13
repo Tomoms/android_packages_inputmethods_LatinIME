@@ -217,6 +217,9 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
     private final boolean mIsHardwareAcceleratedDrawingEnabled;
 
     private GestureConsumer mGestureConsumer = GestureConsumer.NULL_GESTURE_CONSUMER;
+    // The worker finishes before its tail result reaches the UI. Keep paste hidden until that
+    // result has updated the editor and suggestion strip.
+    private volatile boolean mBatchInputUiActive;
 
     public final UIHandler mHandler = new UIHandler(this);
 
@@ -233,8 +236,9 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
         private static final int MSG_DEALLOCATE_MEMORY = 9;
         private static final int MSG_RESUME_SUGGESTIONS_FOR_START_INPUT = 10;
         private static final int MSG_SWITCH_LANGUAGE_AUTOMATICALLY = 11;
+        private static final int MSG_REFRESH_PASTE_ACTIONS = 12;
         // Update this when adding new messages
-        private static final int MSG_LAST = MSG_SWITCH_LANGUAGE_AUTOMATICALLY;
+        private static final int MSG_LAST = MSG_REFRESH_PASTE_ACTIONS;
 
         private static final int ARG1_NOT_GESTURE_INPUT = 0;
         private static final int ARG1_DISMISS_GESTURE_FLOATING_PREVIEW_TEXT = 1;
@@ -330,6 +334,12 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
                 break;
             case MSG_SWITCH_LANGUAGE_AUTOMATICALLY:
                 latinIme.switchLanguage((InputMethodSubtype)msg.obj);
+                break;
+            case MSG_REFRESH_PASTE_ACTIONS:
+                if (latinIme.hasSuggestionStripView() && latinIme.isInputViewShown()) {
+                    latinIme.updatePasteActionStateAndStripVisibility(
+                            latinIme.mSettings.getCurrent(), latinIme.mInputLogic.mSuggestedWords);
+                }
                 break;
             }
         }
@@ -451,6 +461,11 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
 
         public void postSwitchLanguage(final InputMethodSubtype subtype) {
             obtainMessage(MSG_SWITCH_LANGUAGE_AUTOMATICALLY, subtype).sendToTarget();
+        }
+
+        public void postRefreshPasteActions() {
+            removeMessages(MSG_REFRESH_PASTE_ACTIONS);
+            sendEmptyMessage(MSG_REFRESH_PASTE_ACTIONS);
         }
 
         // Working variables for the following methods.
@@ -888,6 +903,7 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
         mSuggestionStripView = (SuggestionStripView)view.findViewById(R.id.suggestion_strip_view);
         if (hasSuggestionStripView()) {
             mSuggestionStripView.setListener(this, view);
+            mSuggestionStripView.resetPasteActionState();
         }
     }
 
@@ -930,10 +946,19 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
         mInputLogic.onSubtypeChanged(SubtypeLocaleUtils.getCombiningRulesExtraValue(subtype),
                 mSettings.getCurrent());
         loadKeyboard();
+        exitBatchInputUi();
+        mHandler.postRefreshPasteActions();
     }
 
     void onStartInputInternal(final EditorInfo editorInfo, final boolean restarting) {
         super.onStartInput(editorInfo, restarting);
+
+        exitBatchInputUi();
+        if (hasSuggestionStripView()) {
+            // The input view can survive an editor switch, but clipboard presentation state must
+            // not carry over to the next EditorInfo while its settings are being loaded.
+            mSuggestionStripView.resetPasteActionState();
+        }
 
         // If the primary hint language does not match the current subtype language, then try
         // to switch to the primary hint language.
@@ -1151,10 +1176,14 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
     }
 
     private void cleanupInternalStateForFinishInput() {
+        exitBatchInputUi();
         // Remove pending messages related to update suggestions
         mHandler.cancelUpdateSuggestionStrip();
         // Should do the following in onFinishInputInternal but until JB MR2 it's not called :(
         mInputLogic.finishInput();
+        if (hasSuggestionStripView()) {
+            mSuggestionStripView.resetPasteActionState();
+        }
     }
 
     protected void deallocateMemory() {
@@ -1178,11 +1207,20 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
         // view is not displayed we have no means of showing suggestions anyway, and if it is then
         // we want to show suggestions anyway.
         final SettingsValues settingsValues = mSettings.getCurrent();
-        if (isInputViewShown()
-                && mInputLogic.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd,
-                        settingsValues)) {
-            mKeyboardSwitcher.requestUpdatingShiftState(getCurrentAutoCapsState(),
-                    getCurrentRecapitalizeState());
+        boolean cursorMovedByUser = false;
+        if (isInputViewShown()) {
+            cursorMovedByUser = mInputLogic.onUpdateSelection(
+                    oldSelStart, oldSelEnd, newSelStart, newSelEnd, settingsValues);
+            if (cursorMovedByUser) {
+                mKeyboardSwitcher.requestUpdatingShiftState(getCurrentAutoCapsState(),
+                        getCurrentRecapitalizeState());
+            }
+        }
+        if (isInputViewShown() && hasSuggestionStripView()) {
+            if (cursorMovedByUser) {
+                mSuggestionStripView.closeTemporaryPasteMode();
+            }
+            updatePasteActionState(settingsValues, mInputLogic.mSuggestedWords);
         }
     }
 
@@ -1668,8 +1706,25 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
     }
 
     @Override
+    public boolean onPaste() {
+        // The standard Paste action lets the platform grant the focused app clipboard access and
+        // preserves its receive content behavior without exposing the clip to LatinIME.
+        return mInputLogic.mConnection.performContextMenuAction(android.R.id.paste);
+    }
+
+    @Override
+    public boolean isTextFieldEmpty() {
+        return mInputLogic.mConnection.isTextFieldEmpty();
+    }
+
+    @Override
     public void onStartBatchInput() {
+        mBatchInputUiActive = true;
         mInputLogic.onStartBatchInput(mSettings.getCurrent(), mKeyboardSwitcher, mHandler);
+        if (hasSuggestionStripView()) {
+            updatePasteActionStateAndStripVisibility(
+                    mSettings.getCurrent(), mInputLogic.mSuggestedWords);
+        }
         mGestureConsumer.onGestureStarted(
                 mRichImm.getCurrentSubtypeLocale(),
                 mKeyboardSwitcher.getKeyboard());
@@ -1688,7 +1743,12 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
 
     @Override
     public void onCancelBatchInput() {
+        exitBatchInputUi();
         mInputLogic.onCancelBatchInput(mHandler);
+        if (hasSuggestionStripView()) {
+            updatePasteActionStateAndStripVisibility(
+                    mSettings.getCurrent(), mInputLogic.mSuggestedWords);
+        }
         mGestureConsumer.onGestureCanceled();
     }
 
@@ -1700,6 +1760,11 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
      * @param suggestedWords suggested words by the IME for the full gesture.
      */
     public void onTailBatchInputResultShown(final SuggestedWords suggestedWords) {
+        exitBatchInputUi();
+        if (hasSuggestionStripView()) {
+            updatePasteActionStateAndStripVisibility(
+                    mSettings.getCurrent(), mInputLogic.mSuggestedWords);
+        }
         mGestureConsumer.onImeSuggestionsProcessed(suggestedWords,
                 mInputLogic.getComposingStart(), mInputLogic.getComposingLength(),
                 mDictionaryFacilitator);
@@ -1733,6 +1798,53 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
         return null != mSuggestionStripView;
     }
 
+    private void exitBatchInputUi() {
+        mBatchInputUiActive = false;
+    }
+
+    private boolean areSuggestionCandidatesEnabled(final SettingsValues settingsValues) {
+        return settingsValues.mInputAttributes.mShouldShowSuggestions
+                && settingsValues.isSuggestionsEnabledPerUserSettings();
+    }
+
+    private boolean isPasteActionEligible(final SettingsValues settingsValues) {
+        return settingsValues.mShowsPasteButton
+                && settingsValues.mInputAttributes.mAllowsClipboardPaste
+                && !settingsValues.mInputAttributes.isTypeNull()
+                && !mBatchInputUiActive;
+    }
+
+    private boolean updatePasteActionState(final SettingsValues settingsValues,
+            final SuggestedWords suggestedWords) {
+        final boolean eligible = isPasteActionEligible(settingsValues);
+        // Determine from local state whether editor text could affect the choice between Paste
+        // and suggestions. The controller checks clipboard availability before querying text.
+        final boolean suggestionsCanTakePriority = eligible
+                && !settingsValues.mInputAttributes.mIsPasswordField
+                && SuggestionStripView.canSuggestionsTakePriority(
+                        areSuggestionCandidatesEnabled(settingsValues),
+                        settingsValues.mGestureFloatingPreviewTextEnabled,
+                        settingsValues.mShouldShowLxxSuggestionUi, suggestedWords);
+        return mSuggestionStripView.updatePasteActionState(
+                eligible, suggestionsCanTakePriority);
+    }
+
+    private void updatePasteActionStateAndStripVisibility(final SettingsValues settingsValues,
+            final SuggestedWords suggestedWords) {
+        final boolean hasPasteAction = updatePasteActionState(settingsValues, suggestedWords);
+        updateSuggestionStripVisibility(settingsValues,
+                ImportantNoticeUtils.shouldShowImportantNotice(this, settingsValues),
+                hasPasteAction);
+    }
+
+    private boolean updateSuggestionStripVisibility(final SettingsValues settingsValues,
+            final boolean shouldShowImportantNotice, final boolean hasPasteAction) {
+        final boolean shouldShow = hasPasteAction
+                || !settingsValues.mInputAttributes.mIsPasswordField;
+        mSuggestionStripView.updateVisibility(shouldShow, isFullscreenMode());
+        return shouldShow;
+    }
+
     private void setSuggestedWords(final SuggestedWords suggestedWords) {
         final SettingsValues currentSettingsValues = mSettings.getCurrent();
         mInputLogic.setSuggestedWords(suggestedWords);
@@ -1746,12 +1858,10 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
 
         final boolean shouldShowImportantNotice =
                 ImportantNoticeUtils.shouldShowImportantNotice(this, currentSettingsValues);
-        final boolean shouldShowSuggestionCandidates =
-                currentSettingsValues.mInputAttributes.mShouldShowSuggestions
-                && currentSettingsValues.isSuggestionsEnabledPerUserSettings();
-        final boolean shouldShowSuggestionsStrip =
-                !currentSettingsValues.mInputAttributes.mIsPasswordField;
-        mSuggestionStripView.updateVisibility(shouldShowSuggestionsStrip, isFullscreenMode());
+        final boolean hasPasteAction = updatePasteActionState(
+                currentSettingsValues, suggestedWords);
+        final boolean shouldShowSuggestionsStrip = updateSuggestionStripVisibility(
+                currentSettingsValues, shouldShowImportantNotice, hasPasteAction);
         if (!shouldShowSuggestionsStrip) {
             return;
         }
@@ -1779,6 +1889,16 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
             mSuggestionStripView.setSuggestions(suggestedWords,
                     mRichImm.getCurrentSubtype().isRtlSubtype());
         }
+    }
+
+    @Override
+    public void onPasteActionAvailabilityChanged() {
+        if (!hasSuggestionStripView() || !onEvaluateInputViewShown()) {
+            return;
+        }
+        final SettingsValues settingsValues = mSettings.getCurrent();
+        updatePasteActionStateAndStripVisibility(
+                settingsValues, mInputLogic.mSuggestedWords);
     }
 
     // TODO[IL]: Move this out of LatinIME.
@@ -1875,6 +1995,10 @@ public class LatinIME extends InputMethodService implements KeyboardActionListen
             mHandler.postUpdateSuggestionStrip(inputStyle);
         }
         if (inputTransaction.didAffectContents()) {
+            if (hasSuggestionStripView() && onEvaluateInputViewShown()) {
+                mSuggestionStripView.closeTemporaryPasteMode();
+                updatePasteActionState(mSettings.getCurrent(), mInputLogic.mSuggestedWords);
+            }
             mSubtypeState.setCurrentSubtypeHasBeenUsed();
         }
     }
