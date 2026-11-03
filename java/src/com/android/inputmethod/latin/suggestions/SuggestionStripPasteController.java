@@ -57,6 +57,7 @@ final class SuggestionStripPasteController
 
     SuggestionStripPasteController(final Context context, final View rootView,
             final ViewGroup suggestionsStrip, final View importantNoticeStrip,
+	    final InlineSuggestionsStrip inlineSuggestionsStrip,
             final HorizontalScrollView pasteActions, final ImageButton pasteModeKey,
             final View pasteButton, final ImageView pasteButtonIcon,
             final TextView pasteButtonText, final OnClickListener clickListener,
@@ -64,6 +65,7 @@ final class SuggestionStripPasteController
         mRootView = rootView;
         mSuggestionsStrip = suggestionsStrip;
         mImportantNoticeStrip = importantNoticeStrip;
+	mInlineSuggestionsStrip = inlineSuggestionsStrip;
         mPasteActions = pasteActions;
         mPasteModeKey = pasteModeKey;
         mPasteButton = pasteButton;
@@ -93,6 +95,7 @@ final class SuggestionStripPasteController
     }
 
     void showSuggestionsStrip() {
+        final boolean hasInlineSuggestions = mInlineSuggestionsStrip.hasSuggestions();
         mSuggestionsStrip.setVisibility(View.VISIBLE);
         mImportantNoticeStrip.setVisibility(View.INVISIBLE);
         mPasteActions.setVisibility(View.INVISIBLE);
