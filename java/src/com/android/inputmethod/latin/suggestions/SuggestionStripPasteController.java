@@ -27,7 +27,7 @@ final class SuggestionStripPasteController
     private final View mRootView;
     private final View mSuggestionsStrip;
     private final View mImportantNoticeStrip;
-    private final InlineSuggestionsStrip mInlineSuggestionsStrip;
+    public final InlineSuggestionsStrip mInlineSuggestionsStrip;
     private final HorizontalScrollView mPasteActions;
     private final ImageButton mPasteModeKey;
     private final View mPasteButton;

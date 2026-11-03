@@ -89,7 +89,6 @@ public final class SuggestionStripView extends RelativeLayout implements
     private final ImageButton mFloatKey;
     private final int mDockedStripMargin;
     private final View mImportantNoticeStrip;
-    private final InlineSuggestionsStrip mInlineSuggestionsStrip;
     private boolean mShouldBeVisible = true;
     private boolean mIsFullscreenMode;
     MainKeyboardView mMainKeyboardView;
@@ -155,7 +154,7 @@ public final class SuggestionStripView extends RelativeLayout implements
         mMoreSuggestionsBuilder = new MoreSuggestions.Builder(context, mMoreSuggestionsView);
         mPasteController = new SuggestionStripPasteController(context, this, mSuggestionsStrip,
                 mImportantNoticeStrip,
-		(InlineSuggestionsStrip)findViewById(R.id.inline_suggestions_strip)
+		(InlineSuggestionsStrip)findViewById(R.id.inline_suggestions_strip),
                 (HorizontalScrollView)findViewById(R.id.paste_actions),
                 (ImageButton)findViewById(R.id.suggestions_strip_paste_key),
                 findViewById(R.id.paste_button),
@@ -214,7 +213,7 @@ public final class SuggestionStripView extends RelativeLayout implements
     public void updateVisibility(final boolean shouldBeVisible, final boolean isFullscreenMode) {
         mShouldBeVisible = shouldBeVisible;
         mIsFullscreenMode = isFullscreenMode;
-        final boolean isVisible = shouldBeVisible || mInlineSuggestionsStrip.hasSuggestions();
+        final boolean isVisible = shouldBeVisible || mPasteController.mInlineSuggestionsStrip.hasSuggestions();
         final int visibility = isVisible ? VISIBLE : (isFullscreenMode ? GONE : INVISIBLE);
         setVisibility(visibility);
         final SettingsValues currentSettingsValues = Settings.getInstance().getCurrent();
@@ -240,7 +239,7 @@ public final class SuggestionStripView extends RelativeLayout implements
                 : mDockedStripMargin;
         setHorizontalMargins(mSuggestionsStrip, margin);
         setHorizontalMargins(mImportantNoticeStrip, margin);
-        setHorizontalMargins(mInlineSuggestionsStrip, margin);
+        setHorizontalMargins(mPasteController.mInlineSuggestionsStrip, margin);
     }
 
     private static void setHorizontalMargins(final View view, final int margin) {
@@ -309,16 +308,16 @@ public final class SuggestionStripView extends RelativeLayout implements
 
     @Nullable
     public InlineSuggestionsRequest createInlineSuggestionsRequest(@Nonnull final Bundle uiExtras) {
-        return mInlineSuggestionsStrip.createRequest(uiExtras,
+        return mPasteController.mInlineSuggestionsStrip.createRequest(uiExtras,
                 getToolKeyTintList().getDefaultColor());
     }
 
     public void setInlineSuggestions(@Nonnull final List<InlineSuggestion> suggestions) {
-        mInlineSuggestionsStrip.setSuggestions(suggestions);
+        mPasteController.mInlineSuggestionsStrip.setSuggestions(suggestions);
         if (isShowingMoreSuggestionPanel()) {
             dismissMoreSuggestionsPanel();
         }
-        mStripVisibilityGroup.showSuggestionsStrip();
+        mPasteController.showSuggestionsStrip();
         updateVisibility(mShouldBeVisible, mIsFullscreenMode);
     }
 
@@ -332,7 +331,7 @@ public final class SuggestionStripView extends RelativeLayout implements
     public boolean maybeShowImportantNoticeTitle() {
         final SettingsValues currentSettingsValues = Settings.getInstance().getCurrent();
         if (!ImportantNoticeUtils.shouldShowImportantNotice(getContext(), currentSettingsValues)
-                || mInlineSuggestionsStrip.hasSuggestions()) {
+                || mPasteController.mInlineSuggestionsStrip.hasSuggestions()) {
             return false;
         }
         if (getWidth() <= 0) {
